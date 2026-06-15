@@ -203,11 +203,13 @@ class ContractStore:
         config["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._write_json(self.config_file, config)
 
-    def generate_handover_note(self, project: Optional[str] = None) -> HandoverNote:
+    def generate_handover_note(self, project: Optional[str] = None, assignee: Optional[str] = None) -> HandoverNote:
         """生成交接说明"""
         contracts = self.get_all_contracts()
         if project:
             contracts = [c for c in contracts if c.project == project]
+        if assignee:
+            contracts = [c for c in contracts if c.assignee == assignee]
 
         note = HandoverNote(project=project or "全部项目")
         note.total_contracts = len(contracts)

@@ -94,9 +94,11 @@ class ContractReviewer:
         for key, value in kwargs.items():
             if key in valid_fields and value is not None:
                 setattr(contract.key_info, key, value)
+                contract.key_info.field_confidence[key] = "人工确认"
             elif key.startswith("ph_") and value is not None:
                 ph_key = key[3:]
                 contract.key_info.placeholders[ph_key] = value
+                contract.key_info.field_confidence[f"ph_{ph_key}"] = "人工确认"
 
         self.store.update_contract(contract)
         return contract

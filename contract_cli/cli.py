@@ -237,6 +237,53 @@ def import_directory(directory, project, no_recursive, assignee, due, tag):
         for err in errors[:5]:
             console.print(f"  - {err}")
 
+    if results:
+        console.print()
+        det_table = Table(title="提取识别明细", box=box.ROUNDED)
+        det_table.add_column("#", justify="right")
+        det_table.add_column("文件名", style="bold")
+        det_table.add_column("提取状态")
+        det_table.add_column("已自动带出")
+        det_table.add_column("待人工补录")
+
+        for idx, (contract, is_new, ext_status) in enumerate(results, 1):
+            ki = contract.key_info
+            conf = ki.field_confidence
+            auto_fields = []
+            pending_fields = []
+            field_labels = {
+                "party_a": "甲方", "party_b": "乙方",
+                "contract_amount": "金额", "start_date": "开始日期",
+                "end_date": "结束日期", "contract_type": "合同类型",
+                "signing_location": "签订地点",
+            }
+            for fkey, flabel in field_labels.items():
+                c = conf.get(fkey, "")
+                if c in ("自动提取", "新稿更新", "人工确认"):
+                    auto_fields.append(flabel)
+                else:
+                    pending_fields.append(flabel)
+            for k, v in ki.placeholders.items():
+                pk = f"ph_{k}"
+                c = conf.get(pk, "")
+                if c in ("自动提取", "新稿更新", "人工确认"):
+                    auto_fields.append(k)
+                elif v in ("待提取", "待审核", "待确认"):
+                    pending_fields.append(k)
+
+            if ext_status == "完整提取":
+                ext_display = f"[green]{ext_status}[/green]"
+            elif "部分" in ext_status:
+                ext_display = f"[yellow]{ext_status}[/yellow]"
+            else:
+                ext_display = f"[red]{ext_status}[/red]"
+            auto_str = ", ".join(auto_fields) if auto_fields else "-"
+            pending_str = ", ".join(pending_fields) if pending_fields else "-"
+            if pending_fields:
+                pending_str = f"[yellow]{pending_str}[/yellow]"
+            det_table.add_row(str(idx), contract.file_name[:30], ext_display, auto_str, pending_str)
+        console.print(det_table)
+
 
 @import_cmd.command("file", help="导入单个合同文件")
 @click.argument("file")
@@ -333,6 +380,7 @@ def review_list(project, status, assignee, risk, overdue, limit):
     table.add_column("负责人")
     table.add_column("截止日期")
     table.add_column("问题")
+    table.add_column("信息状态")
 
     today = datetime.now().strftime("%Y-%m-%d")
     for c in contracts:
@@ -344,10 +392,24 @@ def review_list(project, status, assignee, risk, overdue, limit):
             due_str = f"[red]{due_str}⚠[/red]"
         elif c.due_date and c.due_date == today:
             due_str = f"[yellow]{due_str}📅[/yellow]"
+
+        conf = c.key_info.field_confidence
+        pending_count = sum(1 for v in conf.values() if v == "待确认")
+        old_count = sum(1 for v in conf.values() if v == "沿用旧稿")
+        info_parts = []
+        if pending_count:
+            info_parts.append(f"[red]{pending_count}待确认[/red]")
+        if old_count:
+            info_parts.append(f"[yellow]{old_count}沿用[/yellow]")
+        if not info_parts:
+            info_str = "[green]✓[/green]"
+        else:
+            info_str = " ".join(info_parts)
+
         table.add_row(
             c.id, c.title[:28], c.project,
             status_style(c.status), risk_style(c.risk_level),
-            c.assignee or "-", due_str, issue_str
+            c.assignee or "-", due_str, issue_str, info_str
         )
     console.print(table)
 
@@ -377,25 +439,47 @@ def review_show(contract_id):
     console.print(Panel(info.strip(), title="合同基本信息", border_style="blue"))
 
     ki = contract.key_info
+    conf = ki.field_confidence
     key_table = Table(title="关键信息", box=box.SIMPLE_HEAD)
     key_table.add_column("字段", style="cyan")
     key_table.add_column("内容")
-    key_table.add_row("合同类型", ki.contract_type or "[grey]待填充[/grey]")
-    key_table.add_row("甲方", ki.party_a or "[grey]待填充[/grey]")
-    key_table.add_row("乙方", ki.party_b or "[grey]待填充[/grey]")
-    key_table.add_row("合同金额", ki.contract_amount or "[grey]待填充[/grey]")
-    key_table.add_row("开始日期", ki.start_date or "[grey]待填充[/grey]")
-    key_table.add_row("结束日期", ki.end_date or "[grey]待填充[/grey]")
-    key_table.add_row("签订地点", ki.signing_location or "[grey]待填充[/grey]")
+    key_table.add_column("来源", style="dim")
+
+    _CONF_STYLE = {
+        "自动提取": "green",
+        "新稿更新": "cyan",
+        "沿用旧稿": "yellow",
+        "人工确认": "bold green",
+        "待确认": "red",
+    }
+
+    info_items = [
+        ("合同类型", ki.contract_type, "contract_type"),
+        ("甲方", ki.party_a, "party_a"),
+        ("乙方", ki.party_b, "party_b"),
+        ("合同金额", ki.contract_amount, "contract_amount"),
+        ("开始日期", ki.start_date, "start_date"),
+        ("结束日期", ki.end_date, "end_date"),
+        ("签订地点", ki.signing_location, "signing_location"),
+    ]
+    for label, value, fkey in info_items:
+        val_display = value or "[grey]待填充[/grey]"
+        c_label = conf.get(fkey, "待确认")
+        c_style = _CONF_STYLE.get(c_label, "white")
+        key_table.add_row(label, val_display, f"[{c_style}]{c_label}[/{c_style}]")
     console.print(key_table)
 
     if ki.placeholders:
         ph_table = Table(title="关键条款占位", box=box.SIMPLE_HEAD)
         ph_table.add_column("条款", style="magenta")
         ph_table.add_column("状态")
+        ph_table.add_column("来源", style="dim")
         for k, v in sorted(ki.placeholders.items()):
             color = "green" if v not in ("待提取", "待审核", "待填充") else "yellow"
-            ph_table.add_row(k, f"[{color}]{v}[/{color}]")
+            pk = f"ph_{k}"
+            c_label = conf.get(pk, "待确认")
+            c_style = _CONF_STYLE.get(c_label, "white")
+            ph_table.add_row(k, f"[{color}]{v}[/{color}]", f"[{c_style}]{c_label}[/{c_style}]")
         console.print(ph_table)
 
     if contract.issues:
@@ -801,6 +885,27 @@ def compare_diff(contract_id, old_ver, new_ver, html_out):
 
     console.print(Panel(result.summary, title="比对摘要", border_style="blue"))
 
+    if result.key_field_changes:
+        kf_table = Table(title="关键字段变化", box=box.ROUNDED)
+        kf_table.add_column("字段", style="bold cyan")
+        kf_table.add_column("旧稿")
+        kf_table.add_column("新稿")
+        kf_table.add_column("变化类型")
+        for fc in result.key_field_changes:
+            if fc.change_type == "变更":
+                ct_style = "magenta"
+            elif fc.change_type == "新增":
+                ct_style = "green"
+            else:
+                ct_style = "yellow"
+            kf_table.add_row(
+                fc.field_name,
+                fc.old_value[:40],
+                fc.new_value[:40],
+                f"[{ct_style}]{fc.change_type}[/{ct_style}]",
+            )
+        console.print(kf_table)
+
     if not result.old_file_exists:
         show_warning("旧版本文件不存在，可能已移动或删除")
     if not result.new_file_exists:
@@ -982,10 +1087,30 @@ def summary_handover(project, output):
 @summary.command("package", help="导出完整交接包（交接说明+合同明细+版本历史+问题清单+周会总览+Markdown汇总）")
 @click.option("--project", "-p", default=None, help="按项目筛选")
 @click.option("--assignee", "-a", default=None, help="按负责人筛选")
+@click.option("--assignees", "-A", default=None, help="为多个负责人分别生成目录（逗号分隔）")
 @click.option("--output", "-o", required=True, help="输出目录路径")
-def summary_package(project, assignee, output):
+def summary_package(project, assignee, assignees, output):
     store = get_store()
     summarizer = ContractSummarizer(store)
+
+    if assignees:
+        names = [n.strip() for n in assignees.split(",") if n.strip()]
+        try:
+            paths = summarizer.export_batch_packages(output, project=project, assignees=names)
+            show_success(f"已为 {len(paths)} 位负责人分别导出交接包")
+            for p in paths:
+                name = Path(p).name
+                contracts = store.get_all_contracts()
+                if project:
+                    contracts = [c for c in contracts if c.project == project]
+                assignee_name = name.replace("_", " ")
+                filtered = [c for c in contracts if c.assignee == assignee_name]
+                files = list(Path(p).glob("*"))
+                console.print(f"  📁 {name}/ ({len(filtered)} 份合同, {len(files)} 个文件)")
+        except Exception as e:
+            show_error(str(e))
+        return
+
     try:
         path = summarizer.export_handover_package(output, project=project, assignee=assignee)
         show_success(f"交接包已导出到: {path}")

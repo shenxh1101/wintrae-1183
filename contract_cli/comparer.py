@@ -3,10 +3,11 @@ import os
 import difflib
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .models import Contract, ContractVersion
 from .storage import ContractStore
+from .importer import ContractImporter
 
 
 @dataclass
@@ -30,6 +31,15 @@ class DiffSection:
 
 
 @dataclass
+class KeyFieldChange:
+    """关键字段变化"""
+    field_name: str
+    old_value: str
+    new_value: str
+    change_type: str
+
+
+@dataclass
 class ComparisonResult:
     """比对结果"""
     contract_id: str
@@ -48,6 +58,7 @@ class ComparisonResult:
     similarity_ratio: float
     sections: List[DiffSection]
     summary: str
+    key_field_changes: List[KeyFieldChange] = field(default_factory=list)
 
 
 class ContractComparer:
@@ -135,6 +146,8 @@ class ContractComparer:
             added, removed, modified, similarity
         )
 
+        key_field_changes = self._extract_key_field_changes(old_ver, new_ver)
+
         return ComparisonResult(
             contract_id=contract.id,
             contract_title=contract.title,
@@ -152,6 +165,7 @@ class ContractComparer:
             similarity_ratio=similarity,
             sections=diff_sections,
             summary=summary,
+            key_field_changes=key_field_changes,
         )
 
     def _compute_diff(
@@ -266,6 +280,81 @@ class ContractComparer:
                         return f"新文件第{idx + 1}行: {line[:40]}"
 
         return f"位置 {old_idx + 1} - {new_idx + 1}"
+
+    def _extract_key_field_changes(
+        self, old_ver: ContractVersion, new_ver: ContractVersion
+    ) -> List[KeyFieldChange]:
+        """提取两个版本之间关键字段的变化"""
+        old_text = old_ver.content_snapshot or ""
+        new_text = new_ver.content_snapshot or ""
+        if not old_text or not new_text:
+            return []
+
+        importer = ContractImporter(self.store)
+        old_info = importer.extract_key_info_from_text(old_text)
+        new_info = importer.extract_key_info_from_text(new_text)
+
+        field_labels = {
+            "party_a": "甲方",
+            "party_b": "乙方",
+            "contract_amount": "合同金额",
+            "start_date": "开始日期",
+            "end_date": "结束日期",
+            "contract_type": "合同类型",
+            "signing_location": "签订地点",
+        }
+
+        changes = []
+        for field_name, label in field_labels.items():
+            old_val = getattr(old_info, field_name, None) or ""
+            new_val = getattr(new_info, field_name, None) or ""
+            if not old_val and not new_val:
+                continue
+            if old_val and new_val and old_val != new_val:
+                changes.append(KeyFieldChange(
+                    field_name=label, old_value=old_val,
+                    new_value=new_val, change_type="变更",
+                ))
+            elif not old_val and new_val:
+                changes.append(KeyFieldChange(
+                    field_name=label, old_value="(无)",
+                    new_value=new_val, change_type="新增",
+                ))
+            elif old_val and not new_val:
+                changes.append(KeyFieldChange(
+                    field_name=label, old_value=old_val,
+                    new_value="(未识别)", change_type="需确认",
+                ))
+
+        clause_labels = {
+            "付款方式": "付款方式",
+            "违约责任": "违约责任",
+            "保密条款": "保密条款",
+            "知识产权": "知识产权",
+            "争议解决": "争议解决",
+            "不可抗力": "不可抗力",
+            "解除条款": "解除条款",
+            "续约条款": "续约条款",
+        }
+        for key, label in clause_labels.items():
+            old_clause = old_info.placeholders.get(key, "")
+            new_clause = new_info.placeholders.get(key, "")
+            if not old_clause or not new_clause:
+                continue
+            if old_clause in ("待提取", "待审核", "待确认") and new_clause in ("待提取", "待审核", "待确认"):
+                continue
+            if old_clause != new_clause and old_clause not in ("待提取", "待审核", "待确认") and new_clause not in ("待提取", "待审核", "待确认"):
+                changes.append(KeyFieldChange(
+                    field_name=label, old_value=old_clause[:50],
+                    new_value=new_clause[:50], change_type="变更",
+                ))
+            elif old_clause in ("待提取", "待审核", "待确认") and new_clause not in ("待提取", "待审核", "待确认"):
+                changes.append(KeyFieldChange(
+                    field_name=label, old_value="(未识别)",
+                    new_value=new_clause[:50], change_type="新增",
+                ))
+
+        return changes
 
     def _generate_summary(
         self,

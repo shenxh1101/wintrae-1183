@@ -411,7 +411,7 @@ class ContractImporter:
 
             if file_text and extraction_status in (_EXTRACTION_OK, _EXTRACTION_PARTIAL):
                 new_info = self.extract_key_info_from_text(file_text)
-                self._merge_key_info(existing_same_path.key_info, new_info)
+                self._merge_key_info(existing_same_path.key_info, new_info, is_version_update=True)
 
             if project and project != existing_same_path.project:
                 existing_same_path.project = project
@@ -430,6 +430,7 @@ class ContractImporter:
         contract_title = self.extract_title_from_filename(file_path.name)
         inferred_project = project or self.infer_project_from_path(file_path, base_dir)
         key_info = self.extract_key_info_from_text(file_text)
+        self._init_field_confidence(key_info)
 
         contract = Contract(
             title=contract_title,
@@ -481,25 +482,85 @@ class ContractImporter:
 
         return results, errors
 
-    def _merge_key_info(self, existing: KeyInfo, new_info: KeyInfo) -> None:
-        """合并关键信息：已有值不覆盖，空值用新值填充"""
-        if not existing.party_a and new_info.party_a:
-            existing.party_a = new_info.party_a
-        if not existing.party_b and new_info.party_b:
-            existing.party_b = new_info.party_b
-        if not existing.contract_amount and new_info.contract_amount:
-            existing.contract_amount = new_info.contract_amount
-        if not existing.start_date and new_info.start_date:
-            existing.start_date = new_info.start_date
-        if not existing.end_date and new_info.end_date:
-            existing.end_date = new_info.end_date
-        if not existing.contract_type and new_info.contract_type:
-            existing.contract_type = new_info.contract_type
-        if not existing.signing_location and new_info.signing_location:
-            existing.signing_location = new_info.signing_location
+    def _init_field_confidence(self, key_info: KeyInfo) -> None:
+        """首次导入时为每个字段初始化置信度标记"""
+        fields = {
+            "party_a": key_info.party_a,
+            "party_b": key_info.party_b,
+            "contract_amount": key_info.contract_amount,
+            "start_date": key_info.start_date,
+            "end_date": key_info.end_date,
+            "contract_type": key_info.contract_type,
+            "signing_location": key_info.signing_location,
+        }
+        for fname, val in fields.items():
+            if val:
+                key_info.field_confidence[fname] = "自动提取"
+            else:
+                key_info.field_confidence[fname] = "待确认"
+        for cname, cval in key_info.placeholders.items():
+            if cval and cval not in ("待提取", "待审核", "待确认"):
+                key_info.field_confidence[f"ph_{cname}"] = "自动提取"
+            else:
+                key_info.field_confidence[f"ph_{cname}"] = "待确认"
+
+    def _merge_key_info(self, existing: KeyInfo, new_info: KeyInfo, is_version_update: bool = False) -> None:
+        """合并关键信息：版本更新时以新稿为准刷新，保留人工确认标记"""
+        simple_fields = [
+            "party_a", "party_b", "contract_amount",
+            "start_date", "end_date", "contract_type", "signing_location",
+        ]
+        for fname in simple_fields:
+            old_val = getattr(existing, fname)
+            new_val = getattr(new_info, fname)
+            old_conf = existing.field_confidence.get(fname, "")
+            if old_conf == "人工确认":
+                continue
+            if is_version_update:
+                if new_val and new_val != old_val:
+                    setattr(existing, fname, new_val)
+                    if old_val:
+                        existing.field_confidence[fname] = "新稿更新"
+                    else:
+                        existing.field_confidence[fname] = "自动提取"
+                elif new_val and new_val == old_val:
+                    existing.field_confidence[fname] = "自动提取"
+                elif old_val and not new_val:
+                    existing.field_confidence[fname] = "沿用旧稿"
+                else:
+                    existing.field_confidence[fname] = "待确认"
+            else:
+                if not old_val and new_val:
+                    setattr(existing, fname, new_val)
+                    existing.field_confidence[fname] = "自动提取"
+
         for k, v in new_info.placeholders.items():
-            if k not in existing.placeholders or existing.placeholders[k] in ("待提取", "待审核", "待确认"):
-                existing.placeholders[k] = v
+            pk = f"ph_{k}"
+            old_conf = existing.field_confidence.get(pk, "")
+            if old_conf == "人工确认":
+                continue
+            if is_version_update:
+                if v and v not in ("待提取", "待审核", "待确认"):
+                    old_pv = existing.placeholders.get(k, "")
+                    if k not in existing.placeholders or old_pv in ("待提取", "待审核", "待确认"):
+                        existing.placeholders[k] = v
+                        existing.field_confidence[pk] = "自动提取"
+                    elif old_pv != v:
+                        existing.placeholders[k] = v
+                        existing.field_confidence[pk] = "新稿更新"
+                    else:
+                        existing.field_confidence[pk] = "自动提取"
+                elif k in existing.placeholders and existing.placeholders[k] not in ("待提取", "待审核", "待确认"):
+                    existing.field_confidence[pk] = "沿用旧稿"
+                else:
+                    existing.field_confidence[pk] = "待确认"
+            else:
+                if k not in existing.placeholders or existing.placeholders[k] in ("待提取", "待审核", "待确认"):
+                    existing.placeholders[k] = v
+                    if v and v not in ("待提取", "待审核", "待确认"):
+                        existing.field_confidence[pk] = "自动提取"
+                    else:
+                        existing.field_confidence[pk] = "待确认"
 
     def _find_contract_by_file_path(self, file_path: str) -> Optional[Contract]:
         """通过文件路径查找合同（同一路径=同一合同，内容变化=新版本）"""

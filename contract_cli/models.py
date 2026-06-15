@@ -34,6 +34,7 @@ class KeyInfo:
     contract_type: Optional[str] = None
     signing_location: Optional[str] = None
     placeholders: Dict[str, str] = field(default_factory=dict)
+    field_confidence: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,6 +105,7 @@ class Contract:
             contract_type=key_info_data.get("contract_type"),
             signing_location=key_info_data.get("signing_location"),
             placeholders=key_info_data.get("placeholders", {}),
+            field_confidence=key_info_data.get("field_confidence", {}),
         )
         versions = [ContractVersion(**v) for v in data.get("versions", [])]
         issues = [Issue(**i) for i in data.get("issues", [])]

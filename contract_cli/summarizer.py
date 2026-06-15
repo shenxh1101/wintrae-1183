@@ -50,17 +50,20 @@ class ContractSummarizer:
         lines.append("")
         lines.append("--- 关键信息 ---")
         ki = contract.key_info
+        conf = ki.field_confidence
         info_items = [
-            ("合同类型", ki.contract_type),
-            ("甲方", ki.party_a),
-            ("乙方", ki.party_b),
-            ("合同金额", ki.contract_amount),
-            ("开始日期", ki.start_date),
-            ("结束日期", ki.end_date),
-            ("签订地点", ki.signing_location),
+            ("合同类型", ki.contract_type, "contract_type"),
+            ("甲方", ki.party_a, "party_a"),
+            ("乙方", ki.party_b, "party_b"),
+            ("合同金额", ki.contract_amount, "contract_amount"),
+            ("开始日期", ki.start_date, "start_date"),
+            ("结束日期", ki.end_date, "end_date"),
+            ("签订地点", ki.signing_location, "signing_location"),
         ]
-        for label, value in info_items:
-            lines.append(f"  {label}: {value or '[待填充]'}")
+        for label, value, fkey in info_items:
+            c_label = conf.get(fkey, "")
+            conf_tag = f" [{c_label}]" if c_label else ""
+            lines.append(f"  {label}: {value or '[待填充]'}{conf_tag}")
 
         if ki.placeholders:
             lines.append("")
@@ -224,15 +227,40 @@ class ContractSummarizer:
             lines.append("--- 审阅中合同 ---")
             for c in in_progress:
                 ki = c.key_info
+                conf = ki.field_confidence
                 party_info = ""
                 if ki.party_a or ki.party_b:
-                    party_info = f" | {ki.party_a or '?'} ↔ {ki.party_b or '?'}"
-                amount_info = f" | 金额: {ki.contract_amount}" if ki.contract_amount else ""
+                    pa_conf = conf.get("party_a", "")
+                    pb_conf = conf.get("party_b", "")
+                    pa_tag = f"({pa_conf})" if pa_conf in ("沿用旧稿", "待确认") else ""
+                    pb_tag = f"({pb_conf})" if pb_conf in ("沿用旧稿", "待确认") else ""
+                    party_info = f" | {ki.party_a or '?'}{pa_tag} ↔ {ki.party_b or '?'}{pb_tag}"
+                amount_info = ""
+                if ki.contract_amount:
+                    amt_conf = conf.get("contract_amount", "")
+                    amt_tag = f"({amt_conf})" if amt_conf in ("沿用旧稿", "待确认") else ""
+                    amount_info = f" | 金额: {ki.contract_amount}{amt_tag}"
                 lines.append(f"  • [{c.id}] {c.title}{party_info}{amount_info}")
                 lines.append(f"    负责人: {c.assignee or '未指派'} | 截止: {c.due_date or '未设定'}")
                 pending_i = len([i for i in c.issues if i.status == "待确认"])
                 if pending_i:
                     lines.append(f"    待确认问题: {pending_i} 个")
+                _FIELD_LABELS = {
+                    "party_a": "甲方", "party_b": "乙方", "contract_amount": "金额",
+                    "start_date": "开始日期", "end_date": "结束日期",
+                    "contract_type": "合同类型", "signing_location": "签订地点",
+                    "ph_付款方式": "付款方式", "ph_违约责任": "违约责任",
+                    "ph_保密条款": "保密条款", "ph_知识产权": "知识产权",
+                    "ph_争议解决": "争议解决", "ph_不可抗力": "不可抗力",
+                    "ph_解除条款": "解除条款", "ph_续约条款": "续约条款",
+                    "ph_合同编号": "合同编号",
+                }
+                pending_fields = [_FIELD_LABELS.get(k, k) for k, v in conf.items() if v == "待确认"]
+                old_fields = [_FIELD_LABELS.get(k, k) for k, v in conf.items() if v == "沿用旧稿"]
+                if pending_fields:
+                    lines.append(f"    待确认字段: {', '.join(pending_fields)}")
+                if old_fields:
+                    lines.append(f"    沿用旧稿: {', '.join(old_fields)}")
                 lines.append("")
 
         if pending:
@@ -399,7 +427,7 @@ class ContractSummarizer:
             contracts = [c for c in contracts if c.assignee == assignee]
 
         handover_path = out / "交接说明.txt"
-        note = self.store.generate_handover_note(project)
+        note = self.store.generate_handover_note(project, assignee)
         self.export_handover_note(note, str(handover_path))
 
         detail_path = out / "合同明细.txt"
@@ -422,6 +450,30 @@ class ContractSummarizer:
         self.save_summary_to_file(versions_text, str(versions_path))
 
         return str(out)
+
+    def export_batch_packages(
+        self,
+        output_base_dir: str,
+        project: Optional[str] = None,
+        assignees: Optional[List[str]] = None,
+    ) -> List[str]:
+        """为多个负责人分别导出交接包"""
+        contracts = self.store.get_all_contracts()
+        if project:
+            contracts = [c for c in contracts if c.project == project]
+
+        if not assignees:
+            assignees = sorted(set(c.assignee for c in contracts if c.assignee))
+
+        base = Path(output_base_dir).resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for name in assignees:
+            safe_name = name.replace("/", "_").replace("\\", "_").replace(" ", "_")
+            pkg_dir = base / safe_name
+            self.export_handover_package(str(pkg_dir), project=project, assignee=name)
+            paths.append(str(pkg_dir))
+        return paths
 
     def _generate_issues_list(self, contracts: List[Contract]) -> str:
         """生成待确认问题清单"""
