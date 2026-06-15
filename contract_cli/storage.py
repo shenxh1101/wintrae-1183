@@ -244,6 +244,11 @@ class ContractStore:
                 "project": c.project,
                 "open_issues": len([i for i in c.issues if i.status == "待确认"]),
                 "summary": c.summary or "未生成摘要",
+                "version_count": len(c.versions),
+                "extraction_status": max(c.versions, key=lambda v: v.version_number).extraction_status if c.versions else "未提取",
+                "party_a": c.key_info.party_a,
+                "party_b": c.key_info.party_b,
+                "contract_amount": c.key_info.contract_amount,
             })
 
         note.assignee_summary = assignee_map

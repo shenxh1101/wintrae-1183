@@ -1,5 +1,6 @@
 """合同摘要与导出模块"""
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -40,6 +41,12 @@ class ContractSummarizer:
         if contract.tags:
             lines.append(f"  标签:        {', '.join(contract.tags)}")
 
+        latest_ver = max(contract.versions, key=lambda v: v.version_number)
+        if latest_ver.extraction_status and latest_ver.extraction_status != "未提取":
+            lines.append(f"  文本提取:    {latest_ver.extraction_status}")
+            if latest_ver.extraction_note:
+                lines.append(f"  提取说明:    {latest_ver.extraction_note}")
+
         lines.append("")
         lines.append("--- 关键信息 ---")
         ki = contract.key_info
@@ -57,7 +64,7 @@ class ContractSummarizer:
 
         if ki.placeholders:
             lines.append("")
-            lines.append("--- 关键条款占位 ---")
+            lines.append("--- 关键条款 ---")
             for key, value in sorted(ki.placeholders.items()):
                 lines.append(f"  {key}: {value}")
 
@@ -83,10 +90,15 @@ class ContractSummarizer:
         lines.append("--- 版本历史 ---")
         for v in sorted(contract.versions, key=lambda x: x.version_number):
             marker = " ★ 当前" if v.version_number == contract.current_version else ""
-            lines.append(f"  v{v.version_number}{marker}: {v.file_name}")
+            ext_status = ""
+            if v.extraction_status and v.extraction_status != "未提取":
+                ext_status = f" [{v.extraction_status}]"
+            lines.append(f"  v{v.version_number}{marker}: {v.file_name}{ext_status}")
             lines.append(f"        导入于 {v.imported_at} | 校验 {v.checksum[:8]}")
             if v.note:
                 lines.append(f"        备注: {v.note}")
+            if v.extraction_note:
+                lines.append(f"        提取: {v.extraction_note}")
 
         if contract.review_notes:
             lines.append("")
@@ -143,13 +155,117 @@ class ContractSummarizer:
 
         return "\n".join(lines)
 
+    def generate_weekly_brief(
+        self,
+        project: Optional[str] = None,
+        assignee: Optional[str] = None,
+    ) -> str:
+        """生成周会同步总览摘要"""
+        contracts = self.store.get_all_contracts()
+        if project:
+            contracts = [c for c in contracts if c.project == project]
+        if assignee:
+            contracts = [c for c in contracts if c.assignee == assignee]
+
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        week_ago = (now - __import__("datetime").timedelta(days=7)).strftime("%Y-%m-%d")
+
+        lines = []
+        lines.append("=" * 60)
+        lines.append(f"  法务合同审阅 周会同步总览")
+        lines.append(f"  日期: {today} (回看最近7天)")
+        lines.append("=" * 60)
+        lines.append("")
+
+        total = len(contracts)
+        pending = [c for c in contracts if c.status == ReviewStatus.PENDING]
+        in_progress = [c for c in contracts if c.status == ReviewStatus.IN_PROGRESS]
+        needs_rev = [c for c in contracts if c.status == ReviewStatus.NEEDS_REVISION]
+        approved = [c for c in contracts if c.status == ReviewStatus.APPROVED]
+        rejected = [c for c in contracts if c.status == ReviewStatus.REJECTED]
+        high_risk = [c for c in contracts if c.risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]]
+        overdue = [c for c in contracts if c.due_date and c.due_date < today
+                   and c.status not in [ReviewStatus.APPROVED, ReviewStatus.REJECTED]]
+        recent = [c for c in contracts if c.created_at >= week_ago or c.updated_at >= week_ago]
+
+        lines.append("--- 本周概览 ---")
+        lines.append(f"  合同总数:     {total}")
+        lines.append(f"  待审阅:       {len(pending)} 份")
+        lines.append(f"  审阅中:       {len(in_progress)} 份")
+        lines.append(f"  待修改:       {len(needs_rev)} 份")
+        lines.append(f"  已通过:       {len(approved)} 份")
+        lines.append(f"  已拒绝:       {len(rejected)} 份")
+        lines.append(f"  高/严重风险:  {len(high_risk)} 份")
+        lines.append(f"  逾期合同:     {len(overdue)} 份 ⚠️")
+        lines.append(f"  近7天变动:    {len(recent)} 份")
+        lines.append("")
+
+        all_issues = []
+        for c in contracts:
+            all_issues.extend([i for i in c.issues if i.status == "待确认"])
+        lines.append(f"  待确认问题:   {len(all_issues)} 个")
+        lines.append("")
+
+        if overdue:
+            lines.append("--- ⚠️ 逾期合同 ---")
+            for c in overdue:
+                lines.append(f"  • [{c.id}] {c.title}")
+                lines.append(f"    项目: {c.project} | 负责人: {c.assignee or '未指派'} | 截止: {c.due_date}")
+                lines.append("")
+
+        if high_risk:
+            lines.append("--- 高风险合同 ---")
+            for c in high_risk:
+                lines.append(f"  • [{c.id}] {c.title} - {c.risk_level.value}风险 | {c.status.value}")
+                lines.append("")
+
+        if in_progress:
+            lines.append("--- 审阅中合同 ---")
+            for c in in_progress:
+                ki = c.key_info
+                party_info = ""
+                if ki.party_a or ki.party_b:
+                    party_info = f" | {ki.party_a or '?'} ↔ {ki.party_b or '?'}"
+                amount_info = f" | 金额: {ki.contract_amount}" if ki.contract_amount else ""
+                lines.append(f"  • [{c.id}] {c.title}{party_info}{amount_info}")
+                lines.append(f"    负责人: {c.assignee or '未指派'} | 截止: {c.due_date or '未设定'}")
+                pending_i = len([i for i in c.issues if i.status == "待确认"])
+                if pending_i:
+                    lines.append(f"    待确认问题: {pending_i} 个")
+                lines.append("")
+
+        if pending:
+            lines.append("--- 待审阅合同 ---")
+            for c in pending[:20]:
+                ext = ""
+                if c.versions:
+                    lv = max(c.versions, key=lambda v: v.version_number)
+                    if lv.extraction_status and lv.extraction_status != "未提取":
+                        ext = f" [{lv.extraction_status}]"
+                lines.append(f"  • [{c.id}] {c.title} ({c.project}){ext}")
+            if len(pending) > 20:
+                lines.append(f"  ... 及其他 {len(pending) - 20} 份")
+            lines.append("")
+
+        if recent:
+            lines.append("--- 近7天变动 ---")
+            for c in recent:
+                action = "新建" if c.created_at >= week_ago else "更新"
+                lines.append(f"  • [{c.id}] {c.title} - {action} ({c.updated_at})")
+            lines.append("")
+
+        lines.append("=" * 60)
+        lines.append("  周会总览生成完毕")
+        lines.append("=" * 60)
+        return "\n".join(lines)
+
     def _describe_filters(
         self,
         project: Optional[str],
         status: Optional[ReviewStatus],
         assignee: Optional[str],
     ) -> str:
-        """描述筛选条件"""
         filters = []
         if project:
             filters.append(f"项目={project}")
@@ -160,7 +276,6 @@ class ContractSummarizer:
         return ", ".join(filters) if filters else "无（全部合同）"
 
     def _generate_summary_toc(self, contracts: List[Contract]) -> str:
-        """生成摘要目录"""
         lines = []
         lines.append("【目录】")
         lines.append(f"{'序号':<6}{'合同标题':<32}{'状态':<10}{'风险':<8}{'负责人':<12}{'截止日期':<14}")
@@ -200,24 +315,14 @@ class ContractSummarizer:
 
         return "\n".join(lines)
 
-    def save_summary_to_file(
-        self,
-        content: str,
-        output_path: str,
-    ) -> str:
-        """保存摘要到文件"""
+    def save_summary_to_file(self, content: str, output_path: str) -> str:
         out = Path(output_path).resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
             f.write(content)
         return str(out)
 
-    def export_handover_note(
-        self,
-        note: HandoverNote,
-        output_path: str,
-    ) -> str:
-        """导出交接说明到文件"""
+    def export_handover_note(self, note: HandoverNote, output_path: str) -> str:
         lines = []
         lines.append("=" * 60)
         lines.append("  法务合同审阅工作交接说明")
@@ -249,9 +354,13 @@ class ContractSummarizer:
             lines.append(f"{idx}. {c['title']}")
             lines.append(f"   ID: {c['id']} | 项目: {c['project']}")
             lines.append(f"   状态: {c['status']} | 风险: {c['risk_level']}")
-            lines.append(f"   负责人: {c['assignee'] or '未指派'} | 截止: {c['due_date'] or '未设定'}")
-            lines.append(f"   待确认问题: {c['open_issues']} 个")
-            lines.append(f"   摘要: {c['summary']}")
+            lines.append(f"   负责人: {c.get('assignee') or '未指派'} | 截止: {c.get('due_date') or '未设定'}")
+            lines.append(f"   待确认问题: {c.get('open_issues', 0)} 个")
+            lines.append(f"   版本数: {c.get('version_count', 1)} | 最新提取: {c.get('extraction_status', '-')}")
+            if c.get('party_a') or c.get('party_b'):
+                lines.append(f"   甲方: {c.get('party_a', '-')} | 乙方: {c.get('party_b', '-')}")
+            if c.get('contract_amount'):
+                lines.append(f"   金额: {c['contract_amount']}")
             lines.append("")
 
         lines.append("")
@@ -273,13 +382,120 @@ class ContractSummarizer:
             f.write(content)
         return str(out)
 
+    def export_handover_package(
+        self,
+        output_dir: str,
+        project: Optional[str] = None,
+        assignee: Optional[str] = None,
+    ) -> str:
+        """导出完整交接包（摘要+明细+版本+问题+周会总览）"""
+        out = Path(output_dir).resolve()
+        out.mkdir(parents=True, exist_ok=True)
+
+        contracts = self.store.get_all_contracts()
+        if project:
+            contracts = [c for c in contracts if c.project == project]
+        if assignee:
+            contracts = [c for c in contracts if c.assignee == assignee]
+
+        handover_path = out / "交接说明.txt"
+        note = self.store.generate_handover_note(project)
+        self.export_handover_note(note, str(handover_path))
+
+        detail_path = out / "合同明细.txt"
+        batch_text = self.generate_batch_summary(contracts=contracts)
+        self.save_summary_to_file(batch_text, str(detail_path))
+
+        weekly_path = out / "周会总览.txt"
+        weekly_text = self.generate_weekly_brief(project=project, assignee=assignee)
+        self.save_summary_to_file(weekly_text, str(weekly_path))
+
+        md_path = out / "合同汇总.md"
+        self.export_markdown_summary(contracts, str(md_path), project)
+
+        issues_path = out / "待确认问题清单.txt"
+        issues_text = self._generate_issues_list(contracts)
+        self.save_summary_to_file(issues_text, str(issues_path))
+
+        versions_path = out / "版本历史汇总.txt"
+        versions_text = self._generate_versions_summary(contracts)
+        self.save_summary_to_file(versions_text, str(versions_path))
+
+        return str(out)
+
+    def _generate_issues_list(self, contracts: List[Contract]) -> str:
+        """生成待确认问题清单"""
+        lines = []
+        lines.append("=" * 60)
+        lines.append("  待确认问题清单")
+        lines.append(f"  生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("=" * 60)
+        lines.append("")
+
+        total_pending = 0
+        total_resolved = 0
+        for c in contracts:
+            pending = [i for i in c.issues if i.status == "待确认"]
+            resolved = [i for i in c.issues if i.status == "已解决"]
+            total_pending += len(pending)
+            total_resolved += len(resolved)
+            if c.issues:
+                lines.append(f"【{c.title}】({c.id}) - 项目: {c.project}")
+                lines.append(f"  负责人: {c.assignee or '未指派'} | 截止: {c.due_date or '未设定'}")
+                for i in c.issues:
+                    marker = "⚠️ " if i.status == "待确认" else "✅ "
+                    assign_str = f" → {i.assignee}" if i.assignee else ""
+                    lines.append(f"  {marker}[{i.id}] {i.description}{assign_str}")
+                    lines.append(f"      状态: {i.status} | 创建: {i.created_at}")
+                    if i.note:
+                        lines.append(f"      说明: {i.note}")
+                lines.append("")
+
+        lines.append(f"合计: 待确认 {total_pending} 个, 已解决 {total_resolved} 个")
+        return "\n".join(lines)
+
+    def _generate_versions_summary(self, contracts: List[Contract]) -> str:
+        """生成版本历史汇总"""
+        lines = []
+        lines.append("=" * 60)
+        lines.append("  合同版本历史汇总")
+        lines.append(f"  生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("=" * 60)
+        lines.append("")
+
+        multi_ver = [c for c in contracts if len(c.versions) >= 2]
+        single_ver = [c for c in contracts if len(c.versions) == 1]
+
+        if multi_ver:
+            lines.append("--- 多版本合同 ---")
+            for c in multi_ver:
+                lines.append(f"【{c.title}】({c.id}) - 共 {len(c.versions)} 个版本")
+                for v in sorted(c.versions, key=lambda x: x.version_number):
+                    marker = " ★当前" if v.version_number == c.current_version else ""
+                    ext = f" [{v.extraction_status}]" if v.extraction_status and v.extraction_status != "未提取" else ""
+                    lines.append(f"  v{v.version_number}{marker}: {v.file_name}{ext}")
+                    lines.append(f"      导入: {v.imported_at} | 校验: {v.checksum[:8]}")
+                    if v.extraction_note:
+                        lines.append(f"      提取说明: {v.extraction_note}")
+                lines.append("")
+
+        if single_ver:
+            lines.append("--- 单版本合同 ---")
+            for c in single_ver:
+                v = c.versions[0]
+                ext = f" [{v.extraction_status}]" if v.extraction_status and v.extraction_status != "未提取" else ""
+                lines.append(f"  • [{c.id}] {c.title} - v1{ext} ({v.imported_at})")
+            lines.append("")
+
+        lines.append(f"合计: 多版本 {len(multi_ver)} 份, 单版本 {len(single_ver)} 份")
+        return "\n".join(lines)
+
     def export_markdown_summary(
         self,
         contracts: List[Contract],
         output_path: str,
         project: Optional[str] = None,
     ) -> str:
-        """导出 Markdown 格式的汇总报告"""
         lines = []
         lines.append(f"# 合同审阅汇总报告")
         lines.append("")
@@ -313,8 +529,8 @@ class ContractSummarizer:
 
         lines.append("## 合同清单")
         lines.append("")
-        lines.append("| # | 标题 | 项目 | 状态 | 风险 | 负责人 | 截止日期 | 问题 |")
-        lines.append("|---|------|------|------|------|--------|----------|------|")
+        lines.append("| # | 标题 | 项目 | 状态 | 风险 | 负责人 | 截止日期 | 甲方 | 乙方 | 金额 | 问题 |")
+        lines.append("|---|------|------|------|------|--------|----------|------|------|------|------|")
 
         for idx, c in enumerate(contracts, 1):
             open_issues = len([i for i in c.issues if i.status == "待确认"])
@@ -324,9 +540,11 @@ class ContractSummarizer:
                 and c.due_date < datetime.now().strftime("%Y-%m-%d")
                 and c.status not in [ReviewStatus.APPROVED, ReviewStatus.REJECTED]
             ) else (c.due_date or "-")
+            ki = c.key_info
             lines.append(
                 f"| {idx} | {c.title} | {c.project} | {c.status.value} | "
-                f"{c.risk_level.value} | {c.assignee or '-'} | {due_str} | {issue_str} |"
+                f"{c.risk_level.value} | {c.assignee or '-'} | {due_str} | "
+                f"{ki.party_a or '-'} | {ki.party_b or '-'} | {ki.contract_amount or '-'} | {issue_str} |"
             )
 
         lines.append("")

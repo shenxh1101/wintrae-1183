@@ -176,35 +176,61 @@ def import_directory(directory, project, no_recursive, assignee, due, tag):
         show_error(str(e))
         return
 
-    new_count = sum(1 for _, is_new in results if is_new)
-    updated_count = len(results) - new_count
+    new_count = sum(1 for _, is_new, _ in results if is_new)
+    skip_count = sum(1 for _, is_new, _ in results if not is_new)
+    updated_count = sum(1 for _, is_new, _ in results if is_new and "版本更新" in (_[2] if len(_) > 2 else ""))
+
+    ok_count = sum(1 for _, _, ext in results if ext == "完整提取")
+    partial_count = sum(1 for _, _, ext in results if "部分" in ext)
+    fail_count = sum(1 for _, _, ext in results if "失败" in ext or "非文本" in ext)
 
     table = Table(title=f"导入结果 (共{len(results)}份)", box=box.ROUNDED)
     table.add_column("#", justify="right")
-    table.add_column("状态")
+    table.add_column("导入状态")
+    table.add_column("提取状态")
     table.add_column("ID")
     table.add_column("合同标题", style="bold")
     table.add_column("项目")
     table.add_column("版本")
 
-    for idx, (contract, is_new) in enumerate(results, 1):
-        status_text = "[green]新导入[/green]" if is_new else "[cyan]新版本[/cyan]"
+    for idx, (contract, is_new, ext_status) in enumerate(results, 1):
+        if is_new and "版本" in ext_status:
+            import_text = "[cyan]版本更新[/cyan]"
+        elif is_new:
+            import_text = "[green]新导入[/green]"
+        else:
+            import_text = "[dim]跳过[/dim]"
+        if ext_status == "完整提取":
+            ext_display = f"[green]{ext_status}[/green]"
+        elif "部分" in ext_status:
+            ext_display = f"[yellow]{ext_status}[/yellow]"
+        elif "失败" in ext_status or "非文本" in ext_status:
+            ext_display = f"[red]{ext_status}[/red]"
+        else:
+            ext_display = ext_status
         table.add_row(
-            str(idx), status_text, contract.id,
-            contract.title[:35], contract.project,
+            str(idx), import_text, ext_display, contract.id,
+            contract.title[:30], contract.project,
             f"v{contract.current_version}"
         )
     console.print(table)
 
     parts = []
     if new_count:
-        parts.append(f"[green]新导入 {new_count} 份[/green]")
-    if updated_count:
-        parts.append(f"[cyan]版本更新 {updated_count} 份[/cyan]")
-    if parts:
-        show_success("导入完成: " + "，".join(parts))
-    else:
-        show_success("导入完成")
+        parts.append(f"[green]新导入/更新 {new_count} 份[/green]")
+    if skip_count:
+        parts.append(f"[dim]跳过 {skip_count} 份[/dim]")
+    show_success("导入完成: " + "，".join(parts))
+
+    if ok_count or partial_count or fail_count:
+        ext_parts = []
+        if ok_count:
+            ext_parts.append(f"[green]完整提取 {ok_count} 份[/green]")
+        if partial_count:
+            ext_parts.append(f"[yellow]部分提取 {partial_count} 份[/yellow]")
+        if fail_count:
+            ext_parts.append(f"[red]提取失败 {fail_count} 份[/red]")
+        show_info("文本提取: " + "，".join(ext_parts))
 
     if errors:
         show_warning(f"有 {len(errors)} 个文件导入失败:")
@@ -233,7 +259,7 @@ def import_file(file, project_arg, assignee, due, tag):
         show_error(f"不是有效文件: {file}")
         return
     try:
-        contract, is_new = importer.import_file(
+        contract, is_new, ext_status = importer.import_file(
             path, project=project_arg, assignee=assignee,
             due_date=due, tags=tags
         )
@@ -241,14 +267,17 @@ def import_file(file, project_arg, assignee, due, tag):
         show_error(str(e))
         return
 
-    status_text = "新导入" if is_new else f"更新版本 v{contract.current_version}"
+    status_text = "新导入" if is_new else "跳过(无变化)"
+    ext_display = f" ({ext_status})" if ext_status else ""
     table = Table(box=box.ROUNDED, title="导入成功")
     table.add_column("ID")
     table.add_column("标题")
     table.add_column("项目")
     table.add_column("版本")
+    table.add_column("提取状态")
     table.add_row(contract.id, contract.title, contract.project,
-                  f"v{contract.current_version} ({status_text})")
+                  f"v{contract.current_version} ({status_text})",
+                  ext_status or "-")
     console.print(table)
 
 
@@ -946,6 +975,54 @@ def summary_handover(project, output):
             f"[bold yellow]未解决问题:[/bold yellow] {note.open_issues}"
         )
         console.print(Panel(panel_text, title="交接概览", border_style="green"))
+    except Exception as e:
+        show_error(str(e))
+
+
+@summary.command("package", help="导出完整交接包（交接说明+合同明细+版本历史+问题清单+周会总览+Markdown汇总）")
+@click.option("--project", "-p", default=None, help="按项目筛选")
+@click.option("--assignee", "-a", default=None, help="按负责人筛选")
+@click.option("--output", "-o", required=True, help="输出目录路径")
+def summary_package(project, assignee, output):
+    store = get_store()
+    summarizer = ContractSummarizer(store)
+    try:
+        path = summarizer.export_handover_package(output, project=project, assignee=assignee)
+        show_success(f"交接包已导出到: {path}")
+
+        contracts = store.get_all_contracts()
+        if project:
+            contracts = [c for c in contracts if c.project == project]
+        if assignee:
+            contracts = [c for c in contracts if c.assignee == assignee]
+
+        files = list(Path(path).glob("*"))
+        table = Table(title="交接包内容", box=box.ROUNDED)
+        table.add_column("文件", style="bold")
+        table.add_column("大小", justify="right")
+        for f in sorted(files):
+            size = f.stat().st_size
+            size_str = f"{size / 1024:.1f} KB" if size > 1024 else f"{size} B"
+            table.add_row(f.name, size_str)
+        console.print(table)
+        show_info(f"共 {len(contracts)} 份合同，{len(files)} 个文件")
+    except Exception as e:
+        show_error(str(e))
+
+
+@summary.command("weekly", help="生成周会同步总览")
+@click.option("--project", "-p", default=None, help="按项目筛选")
+@click.option("--assignee", "-a", default=None, help="按负责人筛选")
+@click.option("--output", "-o", default=None, help="输出文件路径")
+def summary_weekly(project, assignee, output):
+    store = get_store()
+    summarizer = ContractSummarizer(store)
+    try:
+        text = summarizer.generate_weekly_brief(project=project, assignee=assignee)
+        console.print(text)
+        if output:
+            path = summarizer.save_summary_to_file(text, output)
+            show_success(f"周会总览已保存: {path}")
     except Exception as e:
         show_error(str(e))
 

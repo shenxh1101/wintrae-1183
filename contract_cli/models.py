@@ -58,6 +58,8 @@ class ContractVersion:
     checksum: str = ""
     note: str = ""
     content_snapshot: Optional[str] = None
+    extraction_status: str = "未提取"
+    extraction_note: str = ""
 
 
 @dataclass
