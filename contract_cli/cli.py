@@ -987,6 +987,92 @@ def compare_list():
     console.print(table)
 
 
+@compare.command("timeline", help="查看合同的版本变更时间线（关键字段变化一览）")
+@click.argument("contract_id")
+@click.option("--output", "-o", default=None, help="输出文件路径")
+def compare_timeline(contract_id, output):
+    store = get_store()
+    comparer = ContractComparer(store)
+    try:
+        contract = store.get_contract(contract_id)
+        if not contract:
+            show_error(f"未找到合同 ID: {contract_id}")
+            return
+        versions = sorted(contract.versions, key=lambda v: v.version_number)
+        if len(versions) < 2:
+            show_warning(f"合同只有 1 个版本（v{contract.current_version}），暂无变更历史")
+            return
+
+        timeline = comparer.generate_version_timeline(contract_id)
+    except Exception as e:
+        show_error(str(e))
+        return
+
+    text_lines = []
+    text_lines.append("=" * 60)
+    text_lines.append(f"  版本变更时间线 - {contract.title}")
+    text_lines.append(f"  合同ID: {contract_id}  |  共 {len(versions)} 个版本")
+    text_lines.append("=" * 60)
+    text_lines.append("")
+
+    v1 = versions[0]
+    text_lines.append(f"v1 (初始版本)  导入于 {v1.imported_at}")
+    text_lines.append(f"  文件名: {v1.file_name}")
+    if v1.extraction_status and v1.extraction_status != "未提取":
+        text_lines.append(f"  提取状态: {v1.extraction_status}")
+    text_lines.append("")
+
+    table = Table(title="版本变更时间线", box=box.ROUNDED, show_lines=True)
+    table.add_column("版本", style="bold cyan", justify="right")
+    table.add_column("导入时间")
+    table.add_column("关键字段变化", overflow="fold")
+
+    for item in timeline:
+        vn = item["version"]
+        vobj = versions[vn - 1]
+        chgs = item["changes"]
+        if chgs:
+            chg_lines = []
+            for fc in chgs:
+                if fc.change_type == "变更":
+                    marker = "📝"
+                    detail = f"{fc.old_value[:20]} → {fc.new_value[:20]}"
+                elif fc.change_type == "新增":
+                    marker = "🆕"
+                    detail = f"{fc.new_value[:30]}"
+                else:
+                    marker = "⚠️"
+                    detail = f"{fc.old_value[:30]} → 未识别"
+                chg_lines.append(f"{marker} {fc.field_name}: {detail}")
+            chg_text = "\n".join(chg_lines)
+        else:
+            chg_text = "[dim]（无关键字段变化）[/dim]"
+        table.add_row(f"v{vn}", item["imported_at"], chg_text)
+
+        text_lines.append(f"v{vn}  导入于 {item['imported_at']}")
+        if item["note"]:
+            text_lines.append(f"  备注: {item['note']}")
+        if item["extraction_status"] and item["extraction_status"] != "未提取":
+            text_lines.append(f"  提取: {item['extraction_status']}")
+        if chgs:
+            text_lines.append(f"  关键字段变化:")
+            for fc in chgs:
+                text_lines.append(f"    - [{fc.change_type}] {fc.field_name}: {fc.old_value} → {fc.new_value}")
+        else:
+            text_lines.append(f"  关键字段变化: （无）")
+        text_lines.append("")
+
+    console.print(table)
+
+    if output:
+        try:
+            summarizer = ContractSummarizer(store)
+            path = summarizer.save_summary_to_file("\n".join(text_lines), output)
+            show_success(f"时间线已保存: {path}")
+        except Exception as e:
+            show_error(str(e))
+
+
 # =============================================================================
 # summary 命令组
 # =============================================================================

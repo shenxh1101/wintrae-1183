@@ -10,6 +10,31 @@ from .models import (
     KeyInfo, HandoverNote
 )
 from .storage import ContractStore
+from .comparer import ContractComparer
+
+
+_FIELD_LABELS = {
+    "party_a": "甲方", "party_b": "乙方", "contract_amount": "金额",
+    "start_date": "开始日期", "end_date": "结束日期",
+    "contract_type": "合同类型", "signing_location": "签订地点",
+    "ph_付款方式": "付款方式", "ph_违约责任": "违约责任",
+    "ph_保密条款": "保密条款", "ph_知识产权": "知识产权",
+    "ph_争议解决": "争议解决", "ph_不可抗力": "不可抗力",
+    "ph_解除条款": "解除条款", "ph_续约条款": "续约条款",
+    "ph_合同编号": "合同编号",
+}
+
+_HIGHLIGHT_CLAUSE_KEYS = [
+    "争议解决", "付款方式", "违约责任", "保密条款",
+]
+
+_CONF_MARK = {
+    "自动提取": "",
+    "新稿更新": "[新稿]",
+    "沿用旧稿": "[沿用]",
+    "人工确认": "[确认]",
+    "待确认": "[待确认]",
+}
 
 
 class ContractSummarizer:
@@ -62,14 +87,25 @@ class ContractSummarizer:
         ]
         for label, value, fkey in info_items:
             c_label = conf.get(fkey, "")
-            conf_tag = f" [{c_label}]" if c_label else ""
+            if c_label:
+                mark = _CONF_MARK.get(c_label, c_label)
+                conf_tag = f" [{mark}]" if mark else ""
+            else:
+                conf_tag = ""
             lines.append(f"  {label}: {value or '[待填充]'}{conf_tag}")
 
         if ki.placeholders:
             lines.append("")
             lines.append("--- 关键条款 ---")
             for key, value in sorted(ki.placeholders.items()):
-                lines.append(f"  {key}: {value}")
+                pk = f"ph_{key}"
+                c_label = conf.get(pk, "")
+                if c_label:
+                    mark = _CONF_MARK.get(c_label, c_label)
+                    conf_tag = f" [{mark}]" if mark else ""
+                else:
+                    conf_tag = ""
+                lines.append(f"  {key}: {value}{conf_tag}")
 
         lines.append("")
         lines.append(f"--- 待确认问题 ({len(contract.issues)}) ---")
@@ -245,16 +281,34 @@ class ContractSummarizer:
                 pending_i = len([i for i in c.issues if i.status == "待确认"])
                 if pending_i:
                     lines.append(f"    待确认问题: {pending_i} 个")
-                _FIELD_LABELS = {
-                    "party_a": "甲方", "party_b": "乙方", "contract_amount": "金额",
-                    "start_date": "开始日期", "end_date": "结束日期",
-                    "contract_type": "合同类型", "signing_location": "签订地点",
-                    "ph_付款方式": "付款方式", "ph_违约责任": "违约责任",
-                    "ph_保密条款": "保密条款", "ph_知识产权": "知识产权",
-                    "ph_争议解决": "争议解决", "ph_不可抗力": "不可抗力",
-                    "ph_解除条款": "解除条款", "ph_续约条款": "续约条款",
-                    "ph_合同编号": "合同编号",
-                }
+
+                highlight_clauses = []
+                for ck in _HIGHLIGHT_CLAUSE_KEYS:
+                    cv = ki.placeholders.get(ck, "")
+                    if cv and cv not in ("待提取", "待审核", "待确认"):
+                        pk = f"ph_{ck}"
+                        c_conf = conf.get(pk, "")
+                        mark = _CONF_MARK.get(c_conf, "")
+                        snippet = cv if len(cv) <= 40 else cv[:38] + ".."
+                        highlight_clauses.append(f"{ck}: {snippet}{mark}")
+                if ki.signing_location:
+                    sl_conf = conf.get("signing_location", "")
+                    mark = _CONF_MARK.get(sl_conf, "")
+                    highlight_clauses.insert(0, f"签订地点: {ki.signing_location}{mark}")
+                if ki.start_date or ki.end_date:
+                    sd_conf = conf.get("start_date", "")
+                    ed_conf = conf.get("end_date", "")
+                    sd_mark = _CONF_MARK.get(sd_conf, "")
+                    ed_mark = _CONF_MARK.get(ed_conf, "")
+                    if ki.start_date and ki.end_date:
+                        highlight_clauses.insert(0, f"期限: {ki.start_date}{sd_mark} ~ {ki.end_date}{ed_mark}")
+                    elif ki.start_date:
+                        highlight_clauses.insert(0, f"开始日期: {ki.start_date}{sd_mark}")
+                    elif ki.end_date:
+                        highlight_clauses.insert(0, f"结束日期: {ki.end_date}{ed_mark}")
+                if highlight_clauses:
+                    lines.append(f"    重点条款: {' | '.join(highlight_clauses)}")
+
                 pending_fields = [_FIELD_LABELS.get(k, k) for k, v in conf.items() if v == "待确认"]
                 old_fields = [_FIELD_LABELS.get(k, k) for k, v in conf.items() if v == "沿用旧稿"]
                 if pending_fields:
@@ -385,10 +439,21 @@ class ContractSummarizer:
             lines.append(f"   负责人: {c.get('assignee') or '未指派'} | 截止: {c.get('due_date') or '未设定'}")
             lines.append(f"   待确认问题: {c.get('open_issues', 0)} 个")
             lines.append(f"   版本数: {c.get('version_count', 1)} | 最新提取: {c.get('extraction_status', '-')}")
+            field_src = c.get('field_source_summary', '')
+            if field_src:
+                lines.append(f"   字段来源: {field_src}")
             if c.get('party_a') or c.get('party_b'):
-                lines.append(f"   甲方: {c.get('party_a', '-')} | 乙方: {c.get('party_b', '-')}")
+                party_a_line = c.get('party_a', '-')
+                party_b_line = c.get('party_b', '-')
+                pa_src = c.get('party_a_source', '')
+                pb_src = c.get('party_b_source', '')
+                pa_tag = f" [{pa_src}]" if pa_src else ""
+                pb_tag = f" [{pb_src}]" if pb_src else ""
+                lines.append(f"   甲方: {party_a_line}{pa_tag} | 乙方: {party_b_line}{pb_tag}")
             if c.get('contract_amount'):
-                lines.append(f"   金额: {c['contract_amount']}")
+                amt_src = c.get('contract_amount_source', '')
+                amt_tag = f" [{amt_src}]" if amt_src else ""
+                lines.append(f"   金额: {c['contract_amount']}{amt_tag}")
             lines.append("")
 
         lines.append("")
@@ -449,7 +514,105 @@ class ContractSummarizer:
         versions_text = self._generate_versions_summary(contracts)
         self.save_summary_to_file(versions_text, str(versions_path))
 
+        index_path = out / "00_交接索引.txt"
+        index_text = self._generate_handover_index(contracts)
+        self.save_summary_to_file(index_text, str(index_path))
+
         return str(out)
+
+    def _generate_handover_index(self, contracts: List[Contract]) -> str:
+        """生成交接包目录索引"""
+        comparer = ContractComparer(self.store)
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        lines = []
+        lines.append("=" * 70)
+        lines.append("  合同交接包 - 目录索引 & 优先级一览")
+        lines.append(f"  生成日期: {today}")
+        lines.append(f"  合同总数: {len(contracts)} 份")
+        lines.append("=" * 70)
+        lines.append("")
+
+        sorted_contracts = sorted(
+            contracts,
+            key=lambda c: (
+                not (c.due_date and c.due_date < today),
+                c.due_date or "9999-99-99",
+                - (1 if c.risk_level.value in ("高", "严重") else 0),
+                len([i for i in c.issues if i.status == "待确认"]) * -1,
+            )
+        )
+
+        lines.append(f"{'优先级':<6}{'标题':<26}{'版本':<6}{'状态':<8}{'风险':<6}{'负责人':<8}{'截止日期':<12}{'问题':<6}最近重点变更")
+        lines.append("-" * 110)
+
+        for c in sorted_contracts:
+            is_overdue = c.due_date and c.due_date < today and c.status not in [ReviewStatus.APPROVED, ReviewStatus.REJECTED]
+            if is_overdue:
+                prio = "★★★"
+            elif c.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL):
+                prio = "★★"
+            elif len([i for i in c.issues if i.status == "待确认"]) > 0:
+                prio = "★"
+            else:
+                prio = "·"
+
+            open_issues = len([i for i in c.issues if i.status == "待确认"])
+            due_str = (c.due_date or "-")
+            if is_overdue:
+                due_str = f"{due_str}⚠"
+
+            title = c.title[:24] + ".." if len(c.title) > 24 else c.title
+            recent_change_desc = ""
+            if len(c.versions) >= 2:
+                try:
+                    tl = comparer.generate_version_timeline(c.id)
+                    if tl:
+                        last = tl[-1]
+                        chgs = last["changes"]
+                        if chgs:
+                            chg_names = []
+                            for fc in chgs[:3]:
+                                chg_names.append(f"{fc.field_name}{fc.change_type}")
+                            recent_change_desc = f"v{last['version']}: {', '.join(chg_names)}"
+                        else:
+                            recent_change_desc = f"v{last['version']}: 无关键字段变化"
+                except Exception:
+                    pass
+
+            lines.append(
+                f"{prio:<6}{title:<26}"
+                f"v{c.current_version:<5}"
+                f"{c.status.value:<8}"
+                f"{c.risk_level.value:<6}"
+                f"{(c.assignee or '-'):<8}"
+                f"{due_str:<12}"
+                f"{str(open_issues) + '个':<6}"
+                f"{recent_change_desc}"
+            )
+
+        lines.append("-" * 110)
+        lines.append("")
+        lines.append("优先级说明:")
+        lines.append("  ★★★ 逾期合同（必须优先处理）")
+        lines.append("  ★★  高/严重风险合同")
+        lines.append("  ★   有待确认问题")
+        lines.append("  ·    正常处理")
+        lines.append("")
+        lines.append("文件清单:")
+        lines.append("  00_交接索引.txt   ← 本文件，快速扫一眼就知道先处理什么")
+        lines.append("  交接说明.txt     ← 整体概况 + 合同明细")
+        lines.append("  合同明细.txt     ← 每份合同的完整摘要（含关键信息+版本+问题）")
+        lines.append("  合同汇总.md      ← Markdown 表格总览")
+        lines.append("  待确认问题清单.txt ← 所有待确认问题逐条列出")
+        lines.append("  版本历史汇总.txt ← 版本历史时间线")
+        lines.append("  周会总览.txt     ← 适合周会同步的总览摘要")
+        lines.append("")
+        lines.append("=" * 70)
+        lines.append("  索引生成完毕")
+        lines.append("=" * 70)
+
+        return "\n".join(lines)
 
     def export_batch_packages(
         self,
@@ -581,8 +744,8 @@ class ContractSummarizer:
 
         lines.append("## 合同清单")
         lines.append("")
-        lines.append("| # | 标题 | 项目 | 状态 | 风险 | 负责人 | 截止日期 | 甲方 | 乙方 | 金额 | 问题 |")
-        lines.append("|---|------|------|------|------|--------|----------|------|------|------|------|")
+        lines.append("| # | 标题 | 项目 | 状态 | 风险 | 负责人 | 截止日期 | 甲方 | 乙方 | 金额 | 字段来源 | 问题 |")
+        lines.append("|---|------|------|------|------|--------|----------|------|------|------|----------|------|")
 
         for idx, c in enumerate(contracts, 1):
             open_issues = len([i for i in c.issues if i.status == "待确认"])
@@ -593,14 +756,32 @@ class ContractSummarizer:
                 and c.status not in [ReviewStatus.APPROVED, ReviewStatus.REJECTED]
             ) else (c.due_date or "-")
             ki = c.key_info
+            conf = ki.field_confidence
+
+            auto_count = sum(1 for v in conf.values() if v in ("自动提取", "人工确认"))
+            new_count = sum(1 for v in conf.values() if v == "新稿更新")
+            old_count = sum(1 for v in conf.values() if v == "沿用旧稿")
+            pending_count = sum(1 for v in conf.values() if v == "待确认")
+            src_parts = []
+            if new_count:
+                src_parts.append(f"新稿{new_count}")
+            if old_count:
+                src_parts.append(f"沿用{old_count}")
+            if pending_count:
+                src_parts.append(f"待确认{pending_count}")
+            src_str = ", ".join(src_parts) if src_parts else f"已确认{auto_count}"
+
             lines.append(
                 f"| {idx} | {c.title} | {c.project} | {c.status.value} | "
                 f"{c.risk_level.value} | {c.assignee or '-'} | {due_str} | "
-                f"{ki.party_a or '-'} | {ki.party_b or '-'} | {ki.contract_amount or '-'} | {issue_str} |"
+                f"{ki.party_a or '-'} | {ki.party_b or '-'} | {ki.contract_amount or '-'} | "
+                f"{src_str} | {issue_str} |"
             )
 
         lines.append("")
         lines.append("---")
+        lines.append("")
+        lines.append("*字段来源说明：新稿=新版本更新 | 沿用=沿用上版 | 待确认=需人工补录 | 已确认=自动或人工已确认*")
         lines.append("")
         lines.append("*报告由 contract-cli 自动生成*")
 

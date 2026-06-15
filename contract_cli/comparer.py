@@ -481,3 +481,33 @@ h2 {{ color: #34495e; margin-top: 30px; }}
         """查找所有可比对的合同（2个版本及以上）"""
         contracts = self.store.get_all_contracts()
         return [c for c in contracts if len(c.versions) >= 2]
+
+    def generate_version_timeline(self, contract_id: str) -> List[Dict]:
+        """生成合同的版本变更时间线
+
+        返回每个版本（v2起）相比上一版的关键字段变化汇总。
+        列表每项结构: {
+            'version': int, 'imported_at': str, 'note': str,
+            'extraction_status': str, 'changes': List[KeyFieldChange]
+        }
+        """
+        contract = self.store.get_contract(contract_id)
+        if not contract:
+            raise ValueError(f"未找到合同 ID: {contract_id}")
+        versions = sorted(contract.versions, key=lambda v: v.version_number)
+        if len(versions) < 2:
+            return []
+
+        timeline = []
+        for i in range(1, len(versions)):
+            old_ver = versions[i - 1]
+            new_ver = versions[i]
+            changes = self._extract_key_field_changes(old_ver, new_ver)
+            timeline.append({
+                "version": new_ver.version_number,
+                "imported_at": new_ver.imported_at,
+                "note": new_ver.note,
+                "extraction_status": new_ver.extraction_status,
+                "changes": changes,
+            })
+        return timeline

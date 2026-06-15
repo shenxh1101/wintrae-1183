@@ -236,6 +236,20 @@ class ContractStore:
             if c.assignee:
                 assignee_map[c.assignee] = assignee_map.get(c.assignee, 0) + 1
 
+            conf = c.key_info.field_confidence
+            auto_count = sum(1 for v in conf.values() if v in ("自动提取", "人工确认"))
+            new_count = sum(1 for v in conf.values() if v == "新稿更新")
+            old_count = sum(1 for v in conf.values() if v == "沿用旧稿")
+            pending_count = sum(1 for v in conf.values() if v == "待确认")
+            src_parts = []
+            if new_count:
+                src_parts.append(f"新稿{new_count}")
+            if old_count:
+                src_parts.append(f"沿用{old_count}")
+            if pending_count:
+                src_parts.append(f"待确认{pending_count}")
+            field_source_summary = ", ".join(src_parts) if src_parts else f"已确认{auto_count}"
+
             note.contracts.append({
                 "id": c.id,
                 "title": c.title,
@@ -251,6 +265,10 @@ class ContractStore:
                 "party_a": c.key_info.party_a,
                 "party_b": c.key_info.party_b,
                 "contract_amount": c.key_info.contract_amount,
+                "party_a_source": conf.get("party_a", ""),
+                "party_b_source": conf.get("party_b", ""),
+                "contract_amount_source": conf.get("contract_amount", ""),
+                "field_source_summary": field_source_summary,
             })
 
         note.assignee_summary = assignee_map
