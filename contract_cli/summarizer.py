@@ -30,10 +30,10 @@ _HIGHLIGHT_CLAUSE_KEYS = [
 
 _CONF_MARK = {
     "自动提取": "",
-    "新稿更新": "[新稿]",
-    "沿用旧稿": "[沿用]",
-    "人工确认": "[确认]",
-    "待确认": "[待确认]",
+    "新稿更新": "新稿",
+    "沿用旧稿": "沿用",
+    "人工确认": "确认",
+    "待确认": "待确认",
 }
 
 
@@ -42,6 +42,64 @@ class ContractSummarizer:
 
     def __init__(self, store: ContractStore):
         self.store = store
+
+    # ----- 字段来源标签统一格式化 -----
+
+    @staticmethod
+    def _conf_mark(confidence: str) -> str:
+        """返回字段置信度的短标签（带方括号，自动提取则返回空串）"""
+        mark = _CONF_MARK.get(confidence, "")
+        return f" [{mark}]" if mark else ""
+
+    @staticmethod
+    def _format_field(label: str, value: Optional[str], confidence: str,
+                       placeholder_fallback: bool = False) -> str:
+        """统一格式：字段名: 值 [来源]
+        - 有值且正常：值 [来源]（来源=自动提取则不加标签）
+        - 值缺失 + 待确认：直接显示 [待确认]，不重复
+        - 值缺失 + 其他状态：[待填充] [来源(如有)]
+        """
+        if value and value not in ("待提取", "待审核", "待确认", "待填充"):
+            return f"{label}: {value}{ContractSummarizer._conf_mark(confidence)}"
+        if confidence == "待确认" or placeholder_fallback:
+            return f"{label}: [待确认]"
+        return f"{label}: [待填充]{ContractSummarizer._conf_mark(confidence)}"
+
+    @staticmethod
+    def _conf_counts(conf_dict: Dict[str, str]) -> Dict[str, int]:
+        """统计各置信度的字段数量"""
+        counts = {"新稿": 0, "沿用": 0, "确认": 0, "待确认": 0, "自动": 0}
+        for v in conf_dict.values():
+            if v == "新稿更新":
+                counts["新稿"] += 1
+            elif v == "沿用旧稿":
+                counts["沿用"] += 1
+            elif v == "人工确认":
+                counts["确认"] += 1
+            elif v == "待确认":
+                counts["待确认"] += 1
+            elif v == "自动提取":
+                counts["自动"] += 1
+        return counts
+
+    @staticmethod
+    def _conf_summary(conf_dict: Dict[str, str]) -> str:
+        """生成来源汇总短文本（如「新稿2, 待确认4」）"""
+        counts = ContractSummarizer._conf_counts(conf_dict)
+        parts = []
+        if counts["新稿"]:
+            parts.append(f"新稿{counts['新稿']}")
+        if counts["沿用"]:
+            parts.append(f"沿用{counts['沿用']}")
+        if counts["确认"]:
+            parts.append(f"确认{counts['确认']}")
+        if counts["待确认"]:
+            parts.append(f"待确认{counts['待确认']}")
+        if not parts:
+            parts.append(f"已确认{counts['自动'] + counts['确认']}")
+        return ", ".join(parts)
+
+    # ------------------------------
 
     def generate_single_summary(self, contract: Contract) -> str:
         """生成单个合同的摘要"""
@@ -87,12 +145,7 @@ class ContractSummarizer:
         ]
         for label, value, fkey in info_items:
             c_label = conf.get(fkey, "")
-            if c_label:
-                mark = _CONF_MARK.get(c_label, c_label)
-                conf_tag = f" [{mark}]" if mark else ""
-            else:
-                conf_tag = ""
-            lines.append(f"  {label}: {value or '[待填充]'}{conf_tag}")
+            lines.append(f"  {self._format_field(label, value, c_label)}")
 
         if ki.placeholders:
             lines.append("")
@@ -100,12 +153,7 @@ class ContractSummarizer:
             for key, value in sorted(ki.placeholders.items()):
                 pk = f"ph_{key}"
                 c_label = conf.get(pk, "")
-                if c_label:
-                    mark = _CONF_MARK.get(c_label, c_label)
-                    conf_tag = f" [{mark}]" if mark else ""
-                else:
-                    conf_tag = ""
-                lines.append(f"  {key}: {value}{conf_tag}")
+                lines.append(f"  {self._format_field(key, value, c_label, placeholder_fallback=True)}")
 
         lines.append("")
         lines.append(f"--- 待确认问题 ({len(contract.issues)}) ---")
@@ -246,6 +294,87 @@ class ContractSummarizer:
         lines.append(f"  待确认问题:   {len(all_issues)} 个")
         lines.append("")
 
+        # 会议议程 & 优先级
+        agenda_items = []
+        for c in contracts:
+            if c.status in [ReviewStatus.APPROVED, ReviewStatus.REJECTED]:
+                continue
+            pending_i = len([i for i in c.issues if i.status == "待确认"])
+            is_overdue = c.due_date and c.due_date < today
+            is_high_risk = c.risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]
+            is_near_due = False
+            if c.due_date:
+                try:
+                    from datetime import timedelta
+                    d = datetime.strptime(c.due_date, "%Y-%m-%d")
+                    delta = (d - now).days
+                    if 0 <= delta <= 7:
+                        is_near_due = True
+                except Exception:
+                    pass
+            has_many_issues = pending_i >= 3
+
+            priority = 4
+            reasons = []
+            suggested_action = "正常跟进"
+            if is_overdue:
+                priority = 0
+                reasons.append("已逾期")
+                suggested_action = "优先协调，确认延期或加急处理"
+            elif is_high_risk:
+                priority = 1
+                reasons.append("高风险")
+                suggested_action = "重点评审核心条款，必要时召开专项讨论"
+            elif is_near_due:
+                priority = 2
+                reasons.append("7天内到期")
+                suggested_action = "本周内完成初评并同步进度"
+            elif has_many_issues:
+                priority = 3
+                reasons.append(f"{pending_i}个待确认问题")
+                suggested_action = "先澄清待确认项，再推进审阅"
+
+            if priority < 4 or c.status == ReviewStatus.IN_PROGRESS:
+                if is_high_risk and priority != 1:
+                    reasons.append("高风险")
+                if is_near_due and priority != 2:
+                    reasons.append("临近截止")
+                if has_many_issues and priority != 3:
+                    reasons.append(f"{pending_i}个待确认问题")
+                if c.status == ReviewStatus.IN_PROGRESS and not reasons:
+                    reasons.append("审阅中")
+                agenda_items.append({
+                    "priority": priority,
+                    "contract": c,
+                    "reasons": reasons,
+                    "action": suggested_action,
+                })
+
+        agenda_items.sort(key=lambda x: (x["priority"], x["contract"].due_date or "9999-99-99",
+                                          -len(x["contract"].issues)))
+
+        if agenda_items:
+            lines.append("--- 📋 会议议程（按优先级） ---")
+            lines.append("")
+            prio_labels = {0: "P0 紧急", 1: "P1 重点", 2: "P2 关注", 3: "P3 跟进", 4: "P4 常规"}
+            for idx, item in enumerate(agenda_items, 1):
+                c = item["contract"]
+                ki = c.key_info
+                conf = ki.field_confidence
+                label = prio_labels.get(item["priority"], "P4 常规")
+                reasons = "、".join(item["reasons"])
+                lines.append(f"  {idx:>2}. [{label}] {c.title}")
+                lines.append(f"      原因: {reasons}")
+                lines.append(f"      建议动作: {item['action']}")
+                lines.append(f"      负责人: {c.assignee or '未指派'} | 截止: {c.due_date or '未设定'}")
+                if ki.party_a or ki.party_b:
+                    pa = ki.party_a or "?"
+                    pb = ki.party_b or "?"
+                    lines.append(f"      甲乙方: {pa} ↔ {pb}")
+                if ki.contract_amount:
+                    lines.append(f"      金额: {ki.contract_amount}")
+                lines.append("")
+
         if overdue:
             lines.append("--- ⚠️ 逾期合同 ---")
             for c in overdue:
@@ -268,14 +397,13 @@ class ContractSummarizer:
                 if ki.party_a or ki.party_b:
                     pa_conf = conf.get("party_a", "")
                     pb_conf = conf.get("party_b", "")
-                    pa_tag = f"({pa_conf})" if pa_conf in ("沿用旧稿", "待确认") else ""
-                    pb_tag = f"({pb_conf})" if pb_conf in ("沿用旧稿", "待确认") else ""
+                    pa_tag = self._conf_mark(pa_conf)
+                    pb_tag = self._conf_mark(pb_conf)
                     party_info = f" | {ki.party_a or '?'}{pa_tag} ↔ {ki.party_b or '?'}{pb_tag}"
                 amount_info = ""
                 if ki.contract_amount:
                     amt_conf = conf.get("contract_amount", "")
-                    amt_tag = f"({amt_conf})" if amt_conf in ("沿用旧稿", "待确认") else ""
-                    amount_info = f" | 金额: {ki.contract_amount}{amt_tag}"
+                    amount_info = f" | 金额: {ki.contract_amount}{self._conf_mark(amt_conf)}"
                 lines.append(f"  • [{c.id}] {c.title}{party_info}{amount_info}")
                 lines.append(f"    负责人: {c.assignee or '未指派'} | 截止: {c.due_date or '未设定'}")
                 pending_i = len([i for i in c.issues if i.status == "待确认"])
@@ -283,31 +411,29 @@ class ContractSummarizer:
                     lines.append(f"    待确认问题: {pending_i} 个")
 
                 highlight_clauses = []
+                if ki.start_date or ki.end_date:
+                    sd_conf = conf.get("start_date", "")
+                    ed_conf = conf.get("end_date", "")
+                    if ki.start_date and ki.end_date:
+                        highlight_clauses.append(
+                            f"期限: {ki.start_date}{self._conf_mark(sd_conf)} ~ {ki.end_date}{self._conf_mark(ed_conf)}"
+                        )
+                    elif ki.start_date:
+                        highlight_clauses.append(f"开始日期: {ki.start_date}{self._conf_mark(sd_conf)}")
+                    elif ki.end_date:
+                        highlight_clauses.append(f"结束日期: {ki.end_date}{self._conf_mark(ed_conf)}")
+                if ki.signing_location:
+                    sl_conf = conf.get("signing_location", "")
+                    highlight_clauses.append(f"签订地点: {ki.signing_location}{self._conf_mark(sl_conf)}")
                 for ck in _HIGHLIGHT_CLAUSE_KEYS:
                     cv = ki.placeholders.get(ck, "")
                     if cv and cv not in ("待提取", "待审核", "待确认"):
                         pk = f"ph_{ck}"
                         c_conf = conf.get(pk, "")
-                        mark = _CONF_MARK.get(c_conf, "")
-                        snippet = cv if len(cv) <= 40 else cv[:38] + ".."
-                        highlight_clauses.append(f"{ck}: {snippet}{mark}")
-                if ki.signing_location:
-                    sl_conf = conf.get("signing_location", "")
-                    mark = _CONF_MARK.get(sl_conf, "")
-                    highlight_clauses.insert(0, f"签订地点: {ki.signing_location}{mark}")
-                if ki.start_date or ki.end_date:
-                    sd_conf = conf.get("start_date", "")
-                    ed_conf = conf.get("end_date", "")
-                    sd_mark = _CONF_MARK.get(sd_conf, "")
-                    ed_mark = _CONF_MARK.get(ed_conf, "")
-                    if ki.start_date and ki.end_date:
-                        highlight_clauses.insert(0, f"期限: {ki.start_date}{sd_mark} ~ {ki.end_date}{ed_mark}")
-                    elif ki.start_date:
-                        highlight_clauses.insert(0, f"开始日期: {ki.start_date}{sd_mark}")
-                    elif ki.end_date:
-                        highlight_clauses.insert(0, f"结束日期: {ki.end_date}{ed_mark}")
+                        snippet = cv if len(cv) <= 36 else cv[:34] + ".."
+                        highlight_clauses.append(f"{ck}: {snippet}{self._conf_mark(c_conf)}")
                 if highlight_clauses:
-                    lines.append(f"    重点条款: {' | '.join(highlight_clauses)}")
+                    lines.append(f"    重点信息: {' | '.join(highlight_clauses)}")
 
                 pending_fields = [_FIELD_LABELS.get(k, k) for k, v in conf.items() if v == "待确认"]
                 old_fields = [_FIELD_LABELS.get(k, k) for k, v in conf.items() if v == "沿用旧稿"]
@@ -442,19 +568,34 @@ class ContractSummarizer:
             field_src = c.get('field_source_summary', '')
             if field_src:
                 lines.append(f"   字段来源: {field_src}")
-            if c.get('party_a') or c.get('party_b'):
-                party_a_line = c.get('party_a', '-')
-                party_b_line = c.get('party_b', '-')
-                pa_src = c.get('party_a_source', '')
-                pb_src = c.get('party_b_source', '')
-                pa_tag = f" [{pa_src}]" if pa_src else ""
-                pb_tag = f" [{pb_src}]" if pb_src else ""
-                lines.append(f"   甲方: {party_a_line}{pa_tag} | 乙方: {party_b_line}{pb_tag}")
-            if c.get('contract_amount'):
-                amt_src = c.get('contract_amount_source', '')
-                amt_tag = f" [{amt_src}]" if amt_src else ""
-                lines.append(f"   金额: {c['contract_amount']}{amt_tag}")
             lines.append("")
+            lines.append("   【关键信息】")
+            conf = c.get('field_confidence', {})
+            placeholders = c.get('placeholders', {})
+            key_info_items = [
+                ("合同类型", c.get('contract_type'), "contract_type"),
+                ("甲方", c.get('party_a'), "party_a"),
+                ("乙方", c.get('party_b'), "party_b"),
+                ("合同金额", c.get('contract_amount'), "contract_amount"),
+                ("开始日期", c.get('start_date'), "start_date"),
+                ("结束日期", c.get('end_date'), "end_date"),
+                ("签订地点", c.get('signing_location'), "signing_location"),
+            ]
+            for label, value, fkey in key_info_items:
+                c_label = conf.get(fkey, "")
+                lines.append(f"     {self._format_field(label, value, c_label)}")
+            lines.append("")
+            if placeholders:
+                lines.append("   【重点条款】")
+                for ck in _HIGHLIGHT_CLAUSE_KEYS:
+                    cv = placeholders.get(ck, "")
+                    pk = f"ph_{ck}"
+                    c_label = conf.get(pk, "")
+                    if cv and cv not in ("待提取", "待审核", "待确认"):
+                        lines.append(f"     {self._format_field(ck, cv, c_label, placeholder_fallback=True)}")
+                    else:
+                        lines.append(f"     {ck}: [待确认]")
+                lines.append("")
 
         lines.append("")
         lines.append("--- 交接说明 ---")
@@ -757,19 +898,7 @@ class ContractSummarizer:
             ) else (c.due_date or "-")
             ki = c.key_info
             conf = ki.field_confidence
-
-            auto_count = sum(1 for v in conf.values() if v in ("自动提取", "人工确认"))
-            new_count = sum(1 for v in conf.values() if v == "新稿更新")
-            old_count = sum(1 for v in conf.values() if v == "沿用旧稿")
-            pending_count = sum(1 for v in conf.values() if v == "待确认")
-            src_parts = []
-            if new_count:
-                src_parts.append(f"新稿{new_count}")
-            if old_count:
-                src_parts.append(f"沿用{old_count}")
-            if pending_count:
-                src_parts.append(f"待确认{pending_count}")
-            src_str = ", ".join(src_parts) if src_parts else f"已确认{auto_count}"
+            src_str = self._conf_summary(conf)
 
             lines.append(
                 f"| {idx} | {c.title} | {c.project} | {c.status.value} | "
@@ -779,9 +908,44 @@ class ContractSummarizer:
             )
 
         lines.append("")
+        lines.append("## 字段来源详情")
+        lines.append("")
+        lines.append("> 待确认字段需要人工补录，沿用字段建议核对最新稿确认是否有效")
+        lines.append("")
+        has_detail = False
+        for c in contracts:
+            conf = c.key_info.field_confidence
+            pending_keys = [k for k, v in conf.items() if v == "待确认"]
+            old_keys = [k for k, v in conf.items() if v == "沿用旧稿"]
+            new_keys = [k for k, v in conf.items() if v == "新稿更新"]
+            if not pending_keys and not old_keys and not new_keys:
+                continue
+            has_detail = True
+            lines.append(f"### {c.title} (`{c.id}`)")
+            lines.append("")
+            if new_keys:
+                new_labels = [_FIELD_LABELS.get(k, k) for k in new_keys]
+                lines.append(f"- **新稿更新** ({len(new_keys)}项): {', '.join(new_labels)}")
+            if old_keys:
+                old_labels = [_FIELD_LABELS.get(k, k) for k in old_keys]
+                lines.append(f"- **沿用旧稿** ({len(old_keys)}项): {', '.join(old_labels)}")
+            if pending_keys:
+                pending_labels = [_FIELD_LABELS.get(k, k) for k in pending_keys]
+                lines.append(f"- **待确认** ({len(pending_keys)}项): {', '.join(pending_labels)}")
+            lines.append("")
+        if not has_detail:
+            lines.append("所有字段均已自动提取或人工确认，无需补录。")
+            lines.append("")
+
+        lines.append("")
         lines.append("---")
         lines.append("")
-        lines.append("*字段来源说明：新稿=新版本更新 | 沿用=沿用上版 | 待确认=需人工补录 | 已确认=自动或人工已确认*")
+        lines.append("**字段来源说明**：")
+        lines.append("- 新稿：新版本中该字段值有更新")
+        lines.append("- 沿用：新稿未识别到，沿用上一版的值")
+        lines.append("- 确认：人工手动设置，永不被自动覆盖")
+        lines.append("- 待确认：从未提取到，需人工补录")
+        lines.append("- (无标记)：自动提取，置信度高")
         lines.append("")
         lines.append("*报告由 contract-cli 自动生成*")
 

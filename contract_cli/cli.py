@@ -1004,6 +1004,7 @@ def compare_timeline(contract_id, output):
             return
 
         timeline = comparer.generate_version_timeline(contract_id)
+        stats = comparer.get_field_stability_stats(contract_id)
     except Exception as e:
         show_error(str(e))
         return
@@ -1063,6 +1064,68 @@ def compare_timeline(contract_id, output):
         text_lines.append("")
 
     console.print(table)
+
+    if stats and stats["most_unstable"]:
+        console.print()
+        stats_table = Table(title="字段稳定性分析", box=box.ROUNDED)
+        stats_table.add_column("字段", style="bold magenta")
+        stats_table.add_column("变更次数", justify="right")
+        stats_table.add_column("变动类型", justify="center")
+        stats_table.add_column("评估", style="bold")
+
+        cat_summary = stats["category_summary"]
+        cat_labels = {
+            "主体类": "🔴 高风险",
+            "金额类": "🔴 高风险",
+            "条款类": "🟡 中风险",
+            "日期类": "🟢 低风险",
+        }
+
+        for fname, cnt in stats["most_unstable"]:
+            ftype = "条款类"
+            if fname in ("甲方", "乙方"):
+                ftype = "主体类"
+            elif fname == "合同金额":
+                ftype = "金额类"
+            elif fname in ("开始日期", "结束日期", "合同类型", "签订地点"):
+                ftype = "日期类"
+            assessment = cat_labels.get(ftype, "🟡 中风险")
+            stats_table.add_row(fname, str(cnt) + " 次", ftype, assessment)
+
+        console.print(stats_table)
+
+        total_changes = sum(stats["field_changes"].values())
+        cat_info = []
+        for cat, cnt in cat_summary.items():
+            if cnt > 0:
+                cat_info.append(f"{cat}:{cnt}次")
+        if cat_info:
+            console.print(Panel(
+                f"共发生 {total_changes} 次关键字段变动  |  {'，'.join(cat_info)}\n"
+                f"💡 建议：主体和金额类字段多次变动时，优先核对商务条款一致性",
+                title="变动汇总", border_style="blue"
+            ))
+
+        text_lines.append("")
+        text_lines.append("--- 字段稳定性分析 ---")
+        text_lines.append(f"  总变更次数: {total_changes} 次")
+        text_lines.append(f"  分类汇总: {', '.join(cat_info)}")
+        text_lines.append("")
+        text_lines.append(f"  {'字段':<16}{'次数':<8}{'类别':<10}{'风险评估'}")
+        text_lines.append("  " + "-" * 50)
+        for fname, cnt in stats["most_unstable"]:
+            ftype = "条款类"
+            if fname in ("甲方", "乙方"):
+                ftype = "主体类"
+            elif fname == "合同金额":
+                ftype = "金额类"
+            elif fname in ("开始日期", "结束日期", "合同类型", "签订地点"):
+                ftype = "日期类"
+            risk = "高" if ftype in ("主体类", "金额类") else ("中" if ftype == "条款类" else "低")
+            text_lines.append(f"  {fname:<16}{str(cnt)+'次':<8}{ftype:<10}{risk}风险")
+        text_lines.append("")
+        text_lines.append("  评估建议：主体/金额类字段多次变动时，需重点核对商务条款一致性")
+        text_lines.append("")
 
     if output:
         try:

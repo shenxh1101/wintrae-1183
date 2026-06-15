@@ -511,3 +511,50 @@ h2 {{ color: #34495e; margin-top: 30px; }}
                 "changes": changes,
             })
         return timeline
+
+    def get_field_stability_stats(self, contract_id: str) -> Dict:
+        """统计合同各字段的变动频率，判断哪些字段最不稳定
+
+        返回: {
+            'total_versions': int,
+            'field_changes': Dict[str, int],  # 字段名 -> 变更次数
+            'most_unstable': List[(str, int)],  # 按变动次数排序
+            'category_summary': Dict[str, int],  # 按类别统计: 主体/金额/条款/日期
+        }
+        """
+        timeline = self.generate_version_timeline(contract_id)
+        if not timeline:
+            return {
+                "total_versions": 1,
+                "field_changes": {},
+                "most_unstable": [],
+                "category_summary": {"主体类": 0, "金额类": 0, "日期类": 0, "条款类": 0},
+            }
+
+        field_counts: Dict[str, int] = {}
+        for item in timeline:
+            for fc in item["changes"]:
+                field_counts[fc.field_name] = field_counts.get(fc.field_name, 0) + 1
+
+        most_unstable = sorted(field_counts.items(), key=lambda x: -x[1])
+
+        party_fields = {"甲方", "乙方"}
+        amount_fields = {"合同金额"}
+        date_fields = {"开始日期", "结束日期", "合同类型", "签订地点"}
+        clause_fields = {
+            "付款方式", "违约责任", "保密条款", "知识产权",
+            "争议解决", "不可抗力", "解除条款", "续约条款",
+        }
+        category_summary = {
+            "主体类": sum(v for k, v in field_counts.items() if k in party_fields),
+            "金额类": sum(v for k, v in field_counts.items() if k in amount_fields),
+            "日期类": sum(v for k, v in field_counts.items() if k in date_fields),
+            "条款类": sum(v for k, v in field_counts.items() if k in clause_fields),
+        }
+
+        return {
+            "total_versions": len(timeline) + 1,
+            "field_changes": field_counts,
+            "most_unstable": most_unstable,
+            "category_summary": category_summary,
+        }
