@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>合同版本比对 - contract test</title>
+<style>
+body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 20px; color: #333; }
+h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+h2 { color: #34495e; margin-top: 30px; }
+.summary { background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 20px 0; }
+.stat-box { display: inline-block; padding: 8px 16px; margin: 5px; border-radius: 4px; font-weight: bold; }
+.added { background: #d4edda; color: #155724; }
+.removed { background: #f8d7da; color: #721c24; }
+.modified { background: #fff3cd; color: #856404; }
+.unchanged { background: #e9ecef; color: #495057; }
+.diff-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px; }
+.diff-table th { background: #343a40; color: white; padding: 10px; text-align: left; }
+.diff-table td { padding: 6px 10px; border-bottom: 1px solid #dee2e6; vertical-align: top; font-family: Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+.line-num { color: #868e96; width: 60px; text-align: right; user-select: none; }
+.section-title { background: #e3f2fd; padding: 8px 12px; border-radius: 4px; margin: 15px 0 5px; font-weight: bold; color: #1565c0; }
+.missing { color: #dc3545; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>合同版本比对报告</h1>
+<h2>contract test <small>(ddba1f1f1979)</small></h2>
+<div class='summary'>
+<p><strong>比对版本:</strong> v1 → v2</p>
+<p><strong>旧文件:</strong> D:\TraeProjects\1183\contract_test.txt
+</p>
+<p><strong>新文件:</strong> D:\TraeProjects\1183\contract_test.txt
+</p>
+<p><strong>内容相似度:</strong> 21.4%</p>
+<div>
+<span class='stat-box added'>新增 0 行</span>
+<span class='stat-box removed'>删除 0 行</span>
+<span class='stat-box modified'>修改 13 处</span>
+</div>
+</div>
+<h2>差异详情</h2>
+<div class='section-title'>位置 1 - 1</div>
+<table class='diff-table'>
+<tr><th>旧行号</th><th>新行号</th><th>内容</th><th>类型</th></tr>
+<tr class='modified'><td class='line-num'>1</td><td class='line-num'></td><td>测试合同 - 办公设备采购 v1</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>2</td><td class='line-num'></td><td>甲方：A公司</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>3</td><td class='line-num'></td><td>乙方：B供应商</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>4</td><td class='line-num'></td><td>合同金额：10万元整</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>5</td><td class='line-num'></td><td>签订地点：上海</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>1</td><td>测试合同 - 办公设备采购 v2（修订版）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>2</td><td>甲方：A科技股份有限公司（已更名）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>3</td><td>乙方：B供应商集团有限公司</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>4</td><td>合同金额：12.5万元整（含税价）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>5</td><td>签订地点：上海市浦东新区</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>6</td><td>签订日期：2026年6月15日</td><td>修改</td></tr>
+</table>
+<div class='section-title'>第7行附近: 第一条 采购内容</div>
+<table class='diff-table'>
+<tr><th>旧行号</th><th>新行号</th><th>内容</th><th>类型</th></tr>
+<tr class='modified'><td class='line-num'>8</td><td class='line-num'></td><td>1.1 笔记本电脑10台</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>9</td><td class='line-num'></td><td>1.2 打印机3台</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>9</td><td>1.1 笔记本电脑10台（升级配置）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>10</td><td>1.2 多功能一体机5台（原3台，新增2台）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>11</td><td>1.3 碎纸机2台【新增】</td><td>修改</td></tr>
+</table>
+<div class='section-title'>第11行附近: 第二条 付款方式</div>
+<table class='diff-table'>
+<tr><th>旧行号</th><th>新行号</th><th>内容</th><th>类型</th></tr>
+<tr class='modified'><td class='line-num'>12</td><td class='line-num'></td><td>2.1 30%预付</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>13</td><td class='line-num'></td><td>2.2 70%验收后支付</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>14</td><td>2.1 20%预付（原30%调降）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>15</td><td>2.2 75%验收合格后15日内支付</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>16</td><td>2.3 5%质保金，满12个月无质量问题支付【新增】</td><td>修改</td></tr>
+</table>
+<div class='section-title'>第13行附近: 2.2 70%验收后支付</div>
+<table class='diff-table'>
+<tr><th>旧行号</th><th>新行号</th><th>内容</th><th>类型</th></tr>
+<tr class='modified'><td class='line-num'>15</td><td class='line-num'></td><td>第三条 违约责任</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>16</td><td class='line-num'></td><td>3.1 按合同法执行</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>18</td><td>第三条 交付与验收</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>19</td><td>3.1 交付日期：2026年7月20日前</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>20</td><td>3.2 验收期：收到后7个工作日</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>21</td><td>3.3 乙方负责免费安装调试【新增】</td><td>修改</td></tr>
+</table>
+<div class='section-title'>第16行附近: 3.1 按合同法执行</div>
+<table class='diff-table'>
+<tr><th>旧行号</th><th>新行号</th><th>内容</th><th>类型</th></tr>
+<tr class='modified'><td class='line-num'>18</td><td class='line-num'></td><td>第四条 争议解决</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'>19</td><td class='line-num'></td><td>4.1 提交法院管辖</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>23</td><td>第四条 质量保证</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>24</td><td>4.1 原厂质保：延至24个月（原12个月）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>25</td><td>4.2 质保期内4小时上门响应【新增】</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>26</td><td>&nbsp;</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>27</td><td>第五条 违约责任</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>28</td><td>5.1 逾期交付按日0.3‰支付违约金（新增具体比例）</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>29</td><td>5.2 逾期付款按银行同期利率计息【新增】</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>30</td><td>&nbsp;</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>31</td><td>第六条 保密条款【新增全条款】</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>32</td><td>6.1 双方对合作信息严格保密</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>33</td><td>6.2 保密期限：合同终止后3年</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>34</td><td>&nbsp;</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>35</td><td>第七条 争议解决【修改】</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>36</td><td>7.1 友好协商优先</td><td>修改</td></tr>
+<tr class='modified'><td class='line-num'></td><td class='line-num'>37</td><td>7.2 协商不成，提交上海仲裁委员会仲裁（原法院管辖）</td><td>修改</td></tr>
+</table>
+</body></html>
